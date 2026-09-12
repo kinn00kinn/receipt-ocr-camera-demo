@@ -28,7 +28,7 @@
       <section class="card camera-card">
         <div class="camera-frame" id="cameraFrame">
           <video id="camera" autoplay muted playsinline></video>
-          <canvas id="captureCanvas" hidden></canvas>
+          <canvas id="captureCanvas" class="capture-preview" hidden></canvas>
           <div class="guide" aria-hidden="true">
             <div class="guide-box"></div>
             <span>レシート全体が入るように撮影</span>
@@ -36,6 +36,14 @@
           <div id="cameraPlaceholder" class="camera-placeholder">
             <span class="camera-icon">▣</span>
             <p>カメラを起動してください</p>
+          </div>
+          <div class="capture-flash" aria-hidden="true"></div>
+          <div id="captureNotice" class="capture-notice" hidden role="status" aria-live="assertive">
+            <span class="capture-notice-icon" aria-hidden="true">✓</span>
+            <div>
+              <strong id="captureNoticeTitle">撮影完了 ✓</strong>
+              <span id="captureNoticeText">OCRを処理しています…</span>
+            </div>
           </div>
         </div>
 
@@ -160,5 +168,6 @@
     </main>
 
     <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/capture-feedback.js"></script>
   </body>
 </html>
