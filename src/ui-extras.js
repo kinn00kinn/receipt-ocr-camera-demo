@@ -168,5 +168,44 @@ if (structuredEl) {
   });
 }
 
+let debugNormalizeBusy = false;
+function normalizeDebugRuntime() {
+  if (debugNormalizeBusy) return;
+  const debugEl = document.getElementById('debugJson');
+  const debug = safeJson('debugJson');
+  const runtime = debug?.paddle?.runtime;
+  const fastPath = runtime?.fastPath;
+  if (!debugEl || !debug || !runtime || !fastPath) return;
+
+  debugNormalizeBusy = true;
+  try {
+    debug.config = {
+      ...(debug.config || {}),
+      recognitionBatchSize: 8,
+      requestedBackend: runtime.requestedBackend ?? null,
+      backend: runtime.recProvider ?? runtime.detProvider ?? runtime.requestedBackend ?? null,
+      detProvider: runtime.detProvider ?? null,
+      recProvider: runtime.recProvider ?? null,
+      model: fastPath.model ?? null,
+      detectionModel: fastPath.detectionModel ?? null,
+      recognitionModel: fastPath.recognitionModel ?? null,
+      ocrInputSide: fastPath.inputSide ?? null,
+    };
+    debugEl.textContent = JSON.stringify(debug, null, 2);
+  } finally {
+    debugNormalizeBusy = false;
+  }
+}
+
+const debugEl = document.getElementById('debugJson');
+if (debugEl) {
+  new MutationObserver(() => queueMicrotask(normalizeDebugRuntime)).observe(debugEl, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+}
+
 // Also run once in case this module loads after a completed result render.
 validateMerchantAfterRender();
+normalizeDebugRuntime();
