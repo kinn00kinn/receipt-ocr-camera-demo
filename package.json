@@ -9,7 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@paddleocr/paddleocr-js": "0.4.2"
+    "@paddleocr/paddleocr-js": "0.4.2",
+    "onnxruntime-web": "1.29.0",
+    "paddleocr": "1.2.0"
   },
   "devDependencies": {
     "vite": "^7.1.0"
