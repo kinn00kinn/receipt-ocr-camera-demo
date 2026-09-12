@@ -1,12 +1,13 @@
 import { PaddleOCR } from '@paddleocr/paddleocr-js';
 
 // Runtime manager for the existing receipt UI.
-// Goals:
-// - never keep more than one real OCR engine alive
-// - do not load a model until the first predict() call
-// - dispose the real worker/session when switching modes
-// - keep heavy Japanese recognition off WebGPU on mobile
-// - keep mode selection inside the UI (no query-string controls)
+// Design rules:
+// - keep at most one real OCR engine alive
+// - lazy-load the real model only when predict() is first requested
+// - dispose worker/session before changing OCR modes
+// - keep the heavier Japanese model off WebGPU on mobile
+// - switch modes from UI controls, never URL parameters
+// - aggressively release temporary canvases and preview copies
 
 const MODE_STORAGE_KEY = 'receipt-ocr-mode-v4';
 const LAST_ERROR_KEY = 'receipt-ocr-last-runtime-error-v4';
@@ -27,7 +28,7 @@ const MODES = Object.freeze({
     detBoxThresh: 0.62,
     recScoreThresh: 0.42,
     timeoutMs: 15000,
-    initTimeoutMs: 30000,
+    initTimeoutMs: 35000,
   }),
   standard: Object.freeze({
     id: 'standard',
@@ -43,7 +44,7 @@ const MODES = Object.freeze({
     detBoxThresh: 0.56,
     recScoreThresh: 0.38,
     timeoutMs: 22000,
-    initTimeoutMs: 35000,
+    initTimeoutMs: 40000,
   }),
   japanese: Object.freeze({
     id: 'japanese',
@@ -59,7 +60,7 @@ const MODES = Object.freeze({
     detBoxThresh: 0.56,
     recScoreThresh: 0.34,
     timeoutMs: 45000,
-    initTimeoutMs: 50000,
+    initTimeoutMs: 55000,
   }),
 });
 
@@ -75,6 +76,7 @@ let resolvedWorkerMode = true;
 let engineGeneration = 0;
 let debugPatchBusy = false;
 let modeUi = null;
+let predictInFlight = 0;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -121,6 +123,21 @@ function releaseCanvas(canvas) {
   } catch {}
   canvas.width = 1;
   canvas.height = 1;
+}
+
+function shrinkPreviewCanvas(canvas, maxSide = 240) {
+  if (!isCanvas(canvas) || Math.max(canvas.width, canvas.height) <= maxSide) return;
+  const scale = maxSide / Math.max(canvas.width, canvas.height);
+  const width = Math.max(1, Math.round(canvas.width * scale));
+  const height = Math.max(1, Math.round(canvas.height * scale));
+  const tiny = document.createElement('canvas');
+  tiny.width = width;
+  tiny.height = height;
+  tiny.getContext('2d', { alpha: false })?.drawImage(canvas, 0, 0, width, height);
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d', { alpha: false })?.drawImage(tiny, 0, 0);
+  releaseCanvas(tiny);
 }
 
 function resizeCanvas(source, maxSide) {
@@ -189,7 +206,11 @@ function updateRuntimeBadge(result = null) {
   const badge = document.getElementById('runtimeBadge');
   if (!badge) return;
   const provider = result?.runtime?.recProvider || result?.runtime?.detProvider;
-  const providerLabel = provider ? String(provider).toUpperCase() : activeMode.backend === 'wasm' ? 'WASM' : 'WebGPU preferred';
+  const providerLabel = provider
+    ? String(provider).toUpperCase()
+    : activeMode.backend === 'wasm'
+      ? 'WASM'
+      : 'WebGPU preferred';
   badge.textContent = `${activeMode.label} · ${providerLabel} · ${activeMode.inputSide}px`;
 }
 
@@ -206,6 +227,7 @@ function createModeUi() {
     .ocr-mode-head span { font-size:12px; opacity:.68; }
     .ocr-mode-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
     .ocr-mode-button { appearance:none; border:1px solid rgba(30,41,59,.16); border-radius:10px; background:rgba(255,255,255,.7); color:inherit; padding:9px 6px; min-height:50px; cursor:pointer; font:inherit; }
+    .ocr-mode-button:disabled { cursor:not-allowed; opacity:.48; }
     .ocr-mode-button strong,.ocr-mode-button small { display:block; }
     .ocr-mode-button strong { font-size:13px; }
     .ocr-mode-button small { margin-top:2px; font-size:10px; opacity:.65; }
@@ -251,11 +273,18 @@ function renderModeUi() {
     const selected = button.dataset.mode === activeMode.id;
     button.classList.toggle('is-active', selected);
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    button.disabled = predictInFlight > 0;
   });
   const description = document.getElementById('ocrModeDescription');
   if (description) description.textContent = activeMode.description;
   const state = document.getElementById('ocrModeEngineState');
-  if (state) state.textContent = realEngine || realEnginePromise ? 'モデル読込済み' : 'モデル未読込';
+  if (state) {
+    state.textContent = predictInFlight > 0
+      ? 'OCR実行中'
+      : realEngine || realEnginePromise
+        ? 'モデル読込済み'
+        : 'モデル未読込';
+  }
   const mem = document.getElementById('ocrModeMemory');
   const snapshot = memorySnapshot();
   if (mem) {
@@ -298,6 +327,11 @@ async function disposeRealEngine({ hardReloadOnFailure = false } = {}) {
 
 async function switchMode(nextModeId) {
   if (!MODES[nextModeId] || nextModeId === activeMode.id) return;
+  if (predictInFlight > 0) {
+    setRuntimeStatus('OCR実行中はモード変更できません', '現在のOCRが完了してから切り替えてください。', false);
+    return;
+  }
+
   const previousMode = activeMode;
   activeModeId = nextModeId;
   activeMode = MODES[nextModeId];
@@ -316,10 +350,7 @@ async function switchMode(nextModeId) {
 
 function engineOptions(mode, worker, backendOverride = null) {
   const backend = backendOverride || mode.backend;
-  const ortOptions = {
-    backend,
-    simd: true,
-  };
+  const ortOptions = { backend, simd: true };
   if (backend === 'wasm') ortOptions.numThreads = 1;
   return {
     textDetectionModelName: mode.detectionModel,
@@ -331,27 +362,38 @@ function engineOptions(mode, worker, backendOverride = null) {
   };
 }
 
+function armInitializationWatchdog(mode) {
+  return setTimeout(() => {
+    sessionStorage.setItem(
+      LAST_ERROR_KEY,
+      `${mode.label}モードのモデル初期化が${Math.round(mode.initTimeoutMs / 1000)}秒を超えたため、ページを安全に再初期化しました。`,
+    );
+    location.reload();
+  }, mode.initTimeoutMs);
+}
+
 async function createRealEngine(mode, generation) {
   const startedAt = performance.now();
   setRuntimeStatus('OCRモデルを読み込み中', `${mode.label}モードを初期化しています。`, true);
 
   let engine;
   let backendFallback = false;
+  let watchdog = armInitializationWatchdog(mode);
   try {
-    engine = await Promise.race([
-      originalCreate(engineOptions(mode, true)),
-      sleep(mode.initTimeoutMs).then(() => { throw new Error(`model initialization timeout after ${mode.initTimeoutMs} ms`); }),
-    ]);
-    resolvedWorkerMode = true;
-  } catch (error) {
-    if (mode.backend === 'auto') {
+    try {
+      engine = await originalCreate(engineOptions(mode, true));
+      resolvedWorkerMode = true;
+    } catch (error) {
+      if (mode.backend !== 'auto') throw error;
+      clearTimeout(watchdog);
       console.warn('[Receipt OCR runtime] WebGPU/auto worker init failed; retrying WASM worker', error);
       backendFallback = true;
+      watchdog = armInitializationWatchdog(mode);
       engine = await originalCreate(engineOptions(mode, true, 'wasm'));
       resolvedWorkerMode = true;
-    } else {
-      throw error;
     }
+  } finally {
+    clearTimeout(watchdog);
   }
 
   if (generation !== engineGeneration || mode.id !== activeMode.id) {
@@ -363,7 +405,11 @@ async function createRealEngine(mode, generation) {
   realEngineModeId = mode.id;
   realEngine = engine;
   renderModeUi();
-  setRuntimeStatus('OCRモデル準備完了', `${mode.label}モデル ${Math.round(realModelInitMs)} ms${backendFallback ? '（WASM fallback）' : ''}`, false);
+  setRuntimeStatus(
+    'OCRモデル準備完了',
+    `${mode.label}モデル ${Math.round(realModelInitMs)} ms${backendFallback ? '（WASM fallback）' : ''}`,
+    false,
+  );
   console.debug('[Receipt OCR runtime] engine ready', {
     mode: mode.id,
     modelInitMs: realModelInitMs,
@@ -385,14 +431,13 @@ async function ensureRealEngine() {
   const generation = engineGeneration;
   const mode = activeMode;
   realEngineModeId = mode.id;
-  realEnginePromise = createRealEngine(mode, generation)
-    .catch((error) => {
-      realEngine = null;
-      realEnginePromise = null;
-      realEngineModeId = null;
-      renderModeUi();
-      throw error;
-    });
+  realEnginePromise = createRealEngine(mode, generation).catch((error) => {
+    realEngine = null;
+    realEnginePromise = null;
+    realEngineModeId = null;
+    renderModeUi();
+    throw error;
+  });
   return realEnginePromise;
 }
 
@@ -422,12 +467,9 @@ async function predictWithTimeout(engine, input, params, mode, isLive) {
         els.notice.textContent = 'OCRタイムアウト — エンジンを再初期化します';
       }
       sessionStorage.setItem(LAST_ERROR_KEY, `${mode.label}モードがタイムアウトしたためOCRエンジンを再初期化しました。`);
-      // A running worker request cannot be reliably cancelled by Promise.race alone.
-      // Dispose it; if disposal cannot complete quickly, reload the same URL to force worker/GPU cleanup.
+      // Promise.race alone does not cancel the worker request. dispose() is mandatory here.
       const released = await disposeRealEngine({ hardReloadOnFailure: false });
-      if (!released) {
-        setTimeout(() => location.reload(), 250);
-      }
+      if (!released) setTimeout(() => location.reload(), 250);
     }
     throw error;
   }
@@ -465,10 +507,11 @@ async function runtimePredict(input, predictOptions = {}) {
   const maxSide = isLiveCanvas ? mode.liveSide : mode.inputSide;
   const transform = resizeCanvas(input, maxSide);
   const memoryBefore = memorySnapshot();
-  let engine;
+  predictInFlight += 1;
+  renderModeUi();
 
   try {
-    engine = await ensureRealEngine();
+    const engine = await ensureRealEngine();
     const params = {
       ...predictOptions,
       textDetLimitSideLen: Math.min(Number(predictOptions.textDetLimitSideLen) || maxSide, maxSide),
@@ -477,16 +520,24 @@ async function runtimePredict(input, predictOptions = {}) {
     };
 
     const results = await predictWithTimeout(engine, transform.input, params, mode, isLiveCanvas);
-    const remapped = results.map((result) => augmentRuntime(remapResult(result, transform), transform, mode, isLiveCanvas, memoryBefore));
+    const remapped = results.map((result) => augmentRuntime(
+      remapResult(result, transform),
+      transform,
+      mode,
+      isLiveCanvas,
+      memoryBefore,
+    ));
     updateRuntimeBadge(remapped[0]);
     return remapped;
   } finally {
+    predictInFlight = Math.max(0, predictInFlight - 1);
     if (transform.temporary) releaseCanvas(transform.input);
+    renderModeUi();
   }
 }
 
-// app-v2 calls PaddleOCR.create() during page initialization. Return a tiny lazy proxy
-// immediately; the real PaddleOCR model is only created when predict() is first called.
+// app-v2 calls PaddleOCR.create() during page initialization. Return a lightweight lazy proxy
+// immediately. The actual PaddleOCR engine is created only on the first predict().
 PaddleOCR.create = async function createLazyRuntimeProxy() {
   return {
     predict: runtimePredict,
@@ -548,15 +599,23 @@ function installDebugPatcher() {
 }
 
 function installMemoryGuards() {
-  // The chooser duplicates each full-size capture into preview canvases. Once a choice is
-  // made, immediately clear those DOM previews. The selected source canvas remains owned by
-  // app-v2 long enough to render the result, but the extra preview copies are released.
   const chooser = document.getElementById('burstChooser');
-  chooser?.addEventListener('click', () => {
-    setTimeout(() => {
-      chooser.querySelectorAll('canvas').forEach(releaseCanvas);
-      chooser.replaceChildren();
-    }, 0);
+  if (chooser) {
+    const shrinkNewPreviews = () => {
+      chooser.querySelectorAll('canvas').forEach((canvas) => shrinkPreviewCanvas(canvas, 240));
+    };
+    new MutationObserver(shrinkNewPreviews).observe(chooser, { childList: true, subtree: true });
+    chooser.addEventListener('click', () => {
+      setTimeout(() => {
+        chooser.querySelectorAll('canvas').forEach(releaseCanvas);
+        chooser.replaceChildren();
+      }, 0);
+    }, { capture: true });
+  }
+
+  const retryButton = document.getElementById('retryButton');
+  retryButton?.addEventListener('click', () => {
+    setTimeout(() => releaseCanvas(document.getElementById('resultCanvas')), 0);
   }, { capture: true });
 
   const liveButton = document.getElementById('liveToggleButton');
@@ -564,7 +623,11 @@ function installMemoryGuards() {
     if (activeMode.id === 'japanese') {
       event.preventDefault();
       event.stopImmediatePropagation();
-      setRuntimeStatus('リアルタイムOCRは高速モード専用です', '日本語優先モードではメモリ負荷を避けるため無効化しています。', false);
+      setRuntimeStatus(
+        'リアルタイムOCRは高速/標準モード専用です',
+        '日本語優先モードではメモリ負荷を避けるため無効化しています。',
+        false,
+      );
     }
   }, { capture: true });
 }
@@ -592,7 +655,6 @@ const footer = document.querySelector('footer p');
 if (footer) footer.textContent = 'PaddleOCR.js · one-engine runtime · lazy model loading · Worker disposal';
 
 window.addEventListener('pagehide', () => {
-  // Best-effort cleanup. The browser will terminate the worker on page teardown as a final guard.
   void disposeRealEngine({ hardReloadOnFailure: false });
 });
 
