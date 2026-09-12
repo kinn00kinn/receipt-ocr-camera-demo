@@ -44,6 +44,23 @@
           <button id="captureButton" class="button button-accent" disabled>撮影して OCR</button>
         </div>
 
+        <section class="live-panel" aria-live="polite">
+          <div class="live-panel-head">
+            <div>
+              <p class="eyebrow">Experimental</p>
+              <strong>リアルタイム OCR</strong>
+            </div>
+            <button id="liveToggleButton" class="button button-small" disabled>開始</button>
+          </div>
+          <p class="live-help">低解像度の中央領域を約2.5秒間隔で認識します。通常OCRとは別の速度検証用です。</p>
+          <div class="live-stats">
+            <span id="liveState">停止中</span>
+            <span id="liveTiming">—</span>
+            <span id="livePassCount">0 passes</span>
+          </div>
+          <div id="liveText" class="live-text">カメラ起動後に開始できます。</div>
+        </section>
+
         <details class="fallback">
           <summary>カメラが使えない場合</summary>
           <label class="file-button">
