@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f7f7f5" />
-    <meta name="description" content="スマホのカメラでレシートを撮影し、PaddleOCR.js / PP-OCRv5 をブラウザ内で試すデモ" />
+    <meta name="description" content="スマホのカメラでレシートを3枚連写し、最良画像を選んでブラウザ内OCRするデモ" />
     <title>Receipt OCR Camera Demo</title>
   </head>
   <body>
@@ -14,93 +14,69 @@
           <p class="eyebrow">Browser-only OCR demo</p>
           <h1>Receipt OCR</h1>
         </div>
-        <span id="runtimeBadge" class="badge">PP-OCRv5 / WASM</span>
+        <span id="runtimeBadge" class="badge">PP-OCRv5 / loading</span>
       </header>
 
       <section class="card intro-card">
-        <p>
-          スマホの背面カメラでレシートを撮影し、端末内で OCR します。
-          OCR結果は行単位に再構成し、店名・日付・合計・小計・税額・商品明細を推定します。
-        </p>
-        <div class="privacy-note">画像そのものをこのデモのサーバーへアップロードしません。</div>
+        <p>1回押すだけで3枚連写し、読みやすい1枚を選んでからOCRします。画像はこのデモのアプリサーバーへ送信しません。</p>
       </section>
 
       <section class="card camera-card">
         <div class="camera-frame" id="cameraFrame">
           <video id="camera" autoplay muted playsinline></video>
-          <canvas id="captureCanvas" class="capture-preview" hidden></canvas>
-          <div class="guide" aria-hidden="true">
-            <div class="guide-box"></div>
-            <span>レシート全体が入るように撮影</span>
-          </div>
-          <div id="cameraPlaceholder" class="camera-placeholder">
-            <span class="camera-icon">▣</span>
-            <p>カメラを起動してください</p>
-          </div>
-          <div class="capture-flash" aria-hidden="true"></div>
-          <div id="captureNotice" class="capture-notice" hidden role="status" aria-live="assertive">
-            <span class="capture-notice-icon" aria-hidden="true">✓</span>
-            <div>
-              <strong id="captureNoticeTitle">撮影完了 ✓</strong>
-              <span id="captureNoticeText">OCRを処理しています…</span>
-            </div>
-          </div>
+          <div class="guide" aria-hidden="true"><div class="guide-box"></div><span>レシート全体を枠内へ</span></div>
+          <div class="camera-placeholder"><span class="camera-icon">▣</span><p>カメラを起動してください</p></div>
+          <div id="captureNotice" class="capture-notice" hidden>撮影準備中</div>
         </div>
 
-        <div class="primary-actions">
+        <div class="shoot-row">
           <button id="startCameraButton" class="button button-primary">カメラを起動</button>
-          <button id="captureButton" class="button button-accent" disabled>撮影して OCR</button>
+          <button id="captureButton" class="button button-accent" disabled>3枚連写</button>
         </div>
+        <div id="burstStatus" class="burst-progress">撮影ボタンを押すと自動で3枚撮ります。</div>
+        <div id="burstChooser" class="burst-chooser" hidden></div>
 
-        <section class="live-panel" aria-live="polite">
-          <div class="live-panel-head">
-            <div>
-              <p class="eyebrow">Experimental</p>
-              <strong>リアルタイム OCR</strong>
+        <details class="experimental-details">
+          <summary>リアルタイムOCR（実験）</summary>
+          <section class="live-panel" aria-live="polite">
+            <div class="live-panel-head">
+              <div><p class="eyebrow">Experimental</p><strong>リアルタイム OCR</strong></div>
+              <button id="liveToggleButton" class="button button-small" disabled>開始</button>
             </div>
-            <button id="liveToggleButton" class="button button-small" disabled>開始</button>
-          </div>
-          <p class="live-help">低解像度の中央領域を約2.5秒間隔で認識します。通常OCRとは別の速度検証用です。</p>
-          <div class="live-stats">
-            <span id="liveState">停止中</span>
-            <span id="liveTiming">—</span>
-            <span id="livePassCount">0 passes</span>
-          </div>
-          <div id="liveText" class="live-text">カメラ起動後に開始できます。</div>
-        </section>
+            <p class="live-help">低解像度で約3秒間隔。通常撮影とは独立した速度確認用です。</p>
+            <div class="live-stats"><span id="liveState">停止中</span><span id="liveTiming">—</span></div>
+            <div id="liveText" class="live-text">カメラ起動後に開始できます。</div>
+          </section>
+        </details>
 
         <details class="fallback">
-          <summary>カメラが使えない場合</summary>
-          <label class="file-button">
-            写真を選択 / 撮影
-            <input id="fileInput" type="file" accept="image/*" capture="environment" />
-          </label>
+          <summary>既存の写真を使う</summary>
+          <label class="file-button">写真を選択<input id="fileInput" type="file" accept="image/*" capture="environment" /></label>
         </details>
       </section>
 
       <section class="card status-card" aria-live="polite">
-        <div class="status-row">
-          <span id="statusDot" class="status-dot"></span>
-          <div>
-            <strong id="statusTitle">準備中</strong>
-            <p id="statusText">OCRモデルをバックグラウンドで先読みします。</p>
-          </div>
-        </div>
+        <div class="status-row"><span id="statusDot" class="status-dot"></span><div><strong id="statusTitle">準備中</strong><p id="statusText">OCRモデルを先読みします。</p></div></div>
         <div id="spinner" class="spinner" hidden></div>
       </section>
 
       <section id="resultSection" class="results" hidden>
+        <section class="card evaluation-card">
+          <div class="evaluation-head">
+            <div><p class="eyebrow">Bookkeeping acceptance</p><h2>家計簿への登録判定</h2></div>
+            <div><div id="evaluationVerdict" class="evaluation-verdict review">要確認</div><div id="evaluationScore" class="evaluation-score">—</div></div>
+          </div>
+          <div id="evaluationList" class="evaluation-list"></div>
+          <div class="acceptance-policy">
+            <strong>自動登録条件:</strong> 合計が確定し、日付・店名が取得でき、平均OCR信頼度70%以上、総合80点以上、致命的FAILなし。<br />
+            <strong>要確認:</strong> 合計は取れたが、店名・日付・画像品質などに不確実性あり。<br />
+            <strong>登録不可:</strong> 合計が取れない、またはOCR品質が極端に低い。
+          </div>
+        </section>
+
         <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Captured image</p>
-              <h2>認識位置</h2>
-            </div>
-            <button id="retryButton" class="button button-small">もう一度</button>
-          </div>
-          <div class="result-image-wrap">
-            <canvas id="resultCanvas"></canvas>
-          </div>
+          <div class="section-heading"><div><p class="eyebrow">Captured image</p><h2>認識位置</h2></div><button id="retryButton" class="button button-small">もう一度</button></div>
+          <div class="result-image-wrap"><canvas id="resultCanvas"></canvas></div>
         </section>
 
         <section class="quick-grid">
@@ -109,65 +85,30 @@
           <article class="metric-card"><span>合計</span><strong id="totalCandidate">—</strong></article>
           <article class="metric-card"><span>小計</span><strong id="subtotalCandidate">—</strong></article>
           <article class="metric-card"><span>税額</span><strong id="taxCandidate">—</strong></article>
-          <article class="metric-card"><span>総処理時間</span><strong id="ocrTime">—</strong></article>
+          <article class="metric-card"><span>OCR処理時間</span><strong id="ocrTime">—</strong></article>
         </section>
 
         <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Structured receipt</p>
-              <h2>整形結果</h2>
-            </div>
-            <span id="itemCount" class="badge">0 items</span>
-          </div>
+          <div class="section-heading"><div><p class="eyebrow">Structured receipt</p><h2>整形結果</h2></div><span id="itemCount" class="badge">0 items</span></div>
           <div id="receiptItems" class="receipt-items"></div>
-          <details class="raw-details">
-            <summary>Structured JSON</summary>
-            <pre id="structuredJson"></pre>
-          </details>
+          <details class="raw-details"><summary>Structured JSON</summary><pre id="structuredJson"></pre></details>
         </section>
 
         <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Performance debug</p>
-              <h2>処理時間</h2>
-            </div>
-            <span class="badge">ms</span>
-          </div>
-          <div class="timing-table-wrap">
-            <table class="timing-table">
-              <tbody id="timingRows"></tbody>
-            </table>
-          </div>
-          <details class="raw-details" open>
-            <summary>Debug JSON</summary>
-            <pre id="debugJson"></pre>
-          </details>
+          <div class="section-heading"><div><p class="eyebrow">Performance debug</p><h2>処理時間</h2></div><span class="badge">ms</span></div>
+          <div class="timing-table-wrap"><table class="timing-table"><tbody id="timingRows"></tbody></table></div>
+          <details class="raw-details" open><summary>Debug JSON</summary><pre id="debugJson"></pre></details>
         </section>
 
         <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">OCR output</p>
-              <h2>認識テキスト</h2>
-            </div>
-            <span id="lineCount" class="badge">0 lines</span>
-          </div>
+          <div class="section-heading"><div><p class="eyebrow">OCR output</p><h2>認識テキスト</h2></div><span id="lineCount" class="badge">0 lines</span></div>
           <div id="ocrItems" class="ocr-list"></div>
-          <details class="raw-details">
-            <summary>Raw OCR JSON</summary>
-            <pre id="rawJson"></pre>
-          </details>
+          <details class="raw-details"><summary>Raw OCR JSON</summary><pre id="rawJson"></pre></details>
         </section>
       </section>
 
-      <footer>
-        <p>PaddleOCR.js · PP-OCRv5 · client-side WASM</p>
-      </footer>
+      <footer><p>PaddleOCR.js · PP-OCRv5 · client-side WASM</p></footer>
     </main>
-
-    <script type="module" src="/src/main.js"></script>
-    <script type="module" src="/src/capture-feedback.js"></script>
+    <script type="module" src="/src/app-v2.js"></script>
   </body>
 </html>
