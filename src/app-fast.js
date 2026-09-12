@@ -1,19 +1,20 @@
 import { PaddleOCR } from '@paddleocr/paddleocr-js';
 
-// Fast bootstrap for the existing v2 UI.
-// Default: PP-OCRv6 tiny detection + PP-OCRv5 mobile recognition.
-// The tiny detector keeps the expensive detection stage light while the v5
-// recognition model restores much better Japanese receipt text quality.
-// Add ?fast=1 to use the all-tiny pair for maximum speed.
+// Stable browser-first bootstrap for the existing v2 UI.
+// Default: PP-OCRv6 tiny detection + tiny recognition on WebGPU.
+// ?accurate=1 enables the heavier v5 recognition model for experiments only.
+// ?backend=wasm forces WASM. ?ocrSide=640..960 changes inference resolution.
 
 const params = new URLSearchParams(location.search);
 const FAST_SIDE = Math.max(480, Math.min(960, Number(params.get('ocrSide')) || 720));
 const forceWasm = params.get('backend') === 'wasm';
 const disableFastResize = params.get('hq') === '1';
-const allTiny = params.get('fast') === '1';
+const accurateMode = params.get('accurate') === '1';
 const detectionModel = 'PP-OCRv6_tiny_det';
-const recognitionModel = allTiny ? 'PP-OCRv6_tiny_rec' : 'PP-OCRv5_mobile_rec';
-const modelLabel = allTiny ? 'v6 tiny' : 'v6 tiny det + v5 rec';
+const recognitionModel = accurateMode ? 'PP-OCRv5_mobile_rec' : 'PP-OCRv6_tiny_rec';
+const modelLabel = accurateMode ? 'v6 tiny det + v5 rec (experimental)' : 'PP-OCRv6 tiny';
+const recognitionBatchSize = accurateMode ? 2 : 8;
+const OCR_TIMEOUT_MS = accurateMode ? 35000 : 20000;
 const originalCreate = PaddleOCR.create.bind(PaddleOCR);
 
 function getWasmThreads() {
@@ -51,9 +52,7 @@ function resizeCanvas(source, maxSide) {
 function rescalePoly(poly, scaleX, scaleY) {
   if (!Array.isArray(poly) || (scaleX === 1 && scaleY === 1)) return poly;
   return poly.map((point) => {
-    if (Array.isArray(point) && point.length >= 2) {
-      return [Number(point[0]) * scaleX, Number(point[1]) * scaleY];
-    }
+    if (Array.isArray(point) && point.length >= 2) return [Number(point[0]) * scaleX, Number(point[1]) * scaleY];
     if (point && typeof point === 'object' && 'x' in point && 'y' in point) {
       return { ...point, x: Number(point.x) * scaleX, y: Number(point.y) * scaleY };
     }
@@ -80,6 +79,33 @@ function setRuntimeBadge(result) {
   badge.textContent = `${modelLabel} / ${String(provider).toUpperCase()} · ${FAST_SIDE}px`;
 }
 
+function showTimeoutState() {
+  const title = document.getElementById('statusTitle');
+  const text = document.getElementById('statusText');
+  const spinner = document.getElementById('spinner');
+  const notice = document.getElementById('captureNotice');
+  if (title) title.textContent = 'OCRを中断しました';
+  if (text) text.textContent = `OCRが${Math.round(OCR_TIMEOUT_MS / 1000)}秒以内に完了しませんでした。ページを再読み込みして再試行してください。`;
+  if (spinner) spinner.hidden = true;
+  if (notice) {
+    notice.hidden = false;
+    notice.textContent = 'OCRタイムアウト — 再読み込みしてください';
+  }
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        showTimeoutState();
+        reject(new Error(`OCR timeout after ${ms} ms`));
+      }, ms);
+    }),
+  ]);
+}
+
 PaddleOCR.create = async function fastCreate(options = {}) {
   const { lang, ocrVersion, ...rest } = options;
   const engine = await originalCreate({
@@ -87,7 +113,7 @@ PaddleOCR.create = async function fastCreate(options = {}) {
     textDetectionModelName: detectionModel,
     textRecognitionModelName: recognitionModel,
     textDetectionBatchSize: 1,
-    textRecognitionBatchSize: 8,
+    textRecognitionBatchSize: recognitionBatchSize,
     ortOptions: {
       ...(rest.ortOptions || {}),
       backend: forceWasm ? 'wasm' : 'auto',
@@ -100,7 +126,7 @@ PaddleOCR.create = async function fastCreate(options = {}) {
   const originalPredict = engine.predict.bind(engine);
   engine.predict = async (input, predictOptions = {}) => {
     if (Array.isArray(input) || !isCanvas(input)) {
-      const results = await originalPredict(input, predictOptions);
+      const results = await withTimeout(originalPredict(input, predictOptions), OCR_TIMEOUT_MS);
       setRuntimeBadge(results?.[0]);
       return results;
     }
@@ -110,11 +136,11 @@ PaddleOCR.create = async function fastCreate(options = {}) {
       ? predictOptions.textDetLimitSideLen
       : Math.min(Number(predictOptions.textDetLimitSideLen) || FAST_SIDE, FAST_SIDE);
 
-    const results = await originalPredict(transform.input, {
+    const results = await withTimeout(originalPredict(transform.input, {
       ...predictOptions,
       textDetLimitSideLen: effectiveLimit,
       textDetBoxThresh: Math.max(Number(predictOptions.textDetBoxThresh) || 0, 0.6),
-    });
+    }), OCR_TIMEOUT_MS);
 
     const remapped = results.map((result) => remapResult(result, transform));
     const first = remapped[0];
@@ -125,11 +151,13 @@ PaddleOCR.create = async function fastCreate(options = {}) {
           model: modelLabel,
           detectionModel,
           recognitionModel,
+          recognitionBatchSize,
           inputSide: Math.max(transform.input.width || 0, transform.input.height || 0),
           displaySide: transform.original ? Math.max(transform.original.width, transform.original.height) : null,
           forcedWasm: forceWasm,
           hq: disableFastResize,
-          allTiny,
+          accurateMode,
+          timeoutMs: OCR_TIMEOUT_MS,
         },
       };
     }
@@ -146,7 +174,6 @@ if (badge) badge.textContent = `${modelLabel} / WebGPU preferred · ${FAST_SIDE}
 await import('./app-v2.js');
 await import('./ui-extras.js');
 
-// app-v2 writes its own initialization badge; restore the actual configured pair.
-if (badge && !badge.textContent.includes('v6 tiny')) {
+if (badge && !badge.textContent.includes('v6')) {
   badge.textContent = `${modelLabel} / WebGPU preferred · ${FAST_SIDE}px`;
 }
