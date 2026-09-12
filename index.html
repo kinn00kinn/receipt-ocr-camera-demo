@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f7f5" />
+    <meta name="description" content="スマホのカメラでレシートを撮影し、PaddleOCR.js / PP-OCRv5 をブラウザ内で試すデモ" />
+    <title>Receipt OCR Camera Demo</title>
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Browser-only OCR demo</p>
+          <h1>Receipt OCR</h1>
+        </div>
+        <span id="runtimeBadge" class="badge">PP-OCRv5 / WASM</span>
+      </header>
+
+      <section class="card intro-card">
+        <p>
+          スマホの背面カメラでレシートを撮影し、端末内で OCR します。
+          初回のみモデル読み込みに時間がかかります。
+        </p>
+        <div class="privacy-note">画像そのものをこのデモのサーバーへアップロードしません。</div>
+      </section>
+
+      <section class="card camera-card">
+        <div class="camera-frame" id="cameraFrame">
+          <video id="camera" autoplay muted playsinline></video>
+          <canvas id="captureCanvas" hidden></canvas>
+          <div class="guide" aria-hidden="true">
+            <div class="guide-box"></div>
+            <span>レシート全体が入るように撮影</span>
+          </div>
+          <div id="cameraPlaceholder" class="camera-placeholder">
+            <span class="camera-icon">▣</span>
+            <p>カメラを起動してください</p>
+          </div>
+        </div>
+
+        <div class="primary-actions">
+          <button id="startCameraButton" class="button button-primary">カメラを起動</button>
+          <button id="captureButton" class="button button-accent" disabled>撮影して OCR</button>
+        </div>
+
+        <details class="fallback">
+          <summary>カメラが使えない場合</summary>
+          <label class="file-button">
+            写真を選択 / 撮影
+            <input id="fileInput" type="file" accept="image/*" capture="environment" />
+          </label>
+        </details>
+      </section>
+
+      <section class="card status-card" aria-live="polite">
+        <div class="status-row">
+          <span id="statusDot" class="status-dot"></span>
+          <div>
+            <strong id="statusTitle">準備完了</strong>
+            <p id="statusText">カメラを起動すると OCR モデルも準備します。</p>
+          </div>
+        </div>
+        <div id="spinner" class="spinner" hidden></div>
+      </section>
+
+      <section id="resultSection" class="results" hidden>
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Captured image</p>
+              <h2>認識位置</h2>
+            </div>
+            <button id="retryButton" class="button button-small">もう一度</button>
+          </div>
+          <div class="result-image-wrap">
+            <canvas id="resultCanvas"></canvas>
+          </div>
+        </section>
+
+        <section class="quick-grid">
+          <article class="metric-card">
+            <span>合計候補</span>
+            <strong id="totalCandidate">—</strong>
+          </article>
+          <article class="metric-card">
+            <span>日付候補</span>
+            <strong id="dateCandidate">—</strong>
+          </article>
+          <article class="metric-card">
+            <span>OCR時間</span>
+            <strong id="ocrTime">—</strong>
+          </article>
+        </section>
+
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">OCR output</p>
+              <h2>認識テキスト</h2>
+            </div>
+            <span id="lineCount" class="badge">0 lines</span>
+          </div>
+          <div id="ocrItems" class="ocr-list"></div>
+          <details class="raw-details">
+            <summary>Raw JSON</summary>
+            <pre id="rawJson"></pre>
+          </details>
+        </section>
+      </section>
+
+      <footer>
+        <p>PaddleOCR.js · PP-OCRv5 · client-side WASM</p>
+      </footer>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
