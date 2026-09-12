@@ -20,7 +20,7 @@
       <section class="card intro-card">
         <p>
           スマホの背面カメラでレシートを撮影し、端末内で OCR します。
-          初回のみモデル読み込みに時間がかかります。
+          OCR結果は行単位に再構成し、店名・日付・合計・小計・税額・商品明細を推定します。
         </p>
         <div class="privacy-note">画像そのものをこのデモのサーバーへアップロードしません。</div>
       </section>
@@ -57,8 +57,8 @@
         <div class="status-row">
           <span id="statusDot" class="status-dot"></span>
           <div>
-            <strong id="statusTitle">準備完了</strong>
-            <p id="statusText">カメラを起動すると OCR モデルも準備します。</p>
+            <strong id="statusTitle">準備中</strong>
+            <p id="statusText">OCRモデルをバックグラウンドで先読みします。</p>
           </div>
         </div>
         <div id="spinner" class="spinner" hidden></div>
@@ -79,18 +79,46 @@
         </section>
 
         <section class="quick-grid">
-          <article class="metric-card">
-            <span>合計候補</span>
-            <strong id="totalCandidate">—</strong>
-          </article>
-          <article class="metric-card">
-            <span>日付候補</span>
-            <strong id="dateCandidate">—</strong>
-          </article>
-          <article class="metric-card">
-            <span>OCR時間</span>
-            <strong id="ocrTime">—</strong>
-          </article>
+          <article class="metric-card"><span>店名候補</span><strong id="merchantCandidate">—</strong></article>
+          <article class="metric-card"><span>日付</span><strong id="dateCandidate">—</strong></article>
+          <article class="metric-card"><span>合計</span><strong id="totalCandidate">—</strong></article>
+          <article class="metric-card"><span>小計</span><strong id="subtotalCandidate">—</strong></article>
+          <article class="metric-card"><span>税額</span><strong id="taxCandidate">—</strong></article>
+          <article class="metric-card"><span>総処理時間</span><strong id="ocrTime">—</strong></article>
+        </section>
+
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Structured receipt</p>
+              <h2>整形結果</h2>
+            </div>
+            <span id="itemCount" class="badge">0 items</span>
+          </div>
+          <div id="receiptItems" class="receipt-items"></div>
+          <details class="raw-details">
+            <summary>Structured JSON</summary>
+            <pre id="structuredJson"></pre>
+          </details>
+        </section>
+
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Performance debug</p>
+              <h2>処理時間</h2>
+            </div>
+            <span class="badge">ms</span>
+          </div>
+          <div class="timing-table-wrap">
+            <table class="timing-table">
+              <tbody id="timingRows"></tbody>
+            </table>
+          </div>
+          <details class="raw-details" open>
+            <summary>Debug JSON</summary>
+            <pre id="debugJson"></pre>
+          </details>
         </section>
 
         <section class="card">
@@ -103,7 +131,7 @@
           </div>
           <div id="ocrItems" class="ocr-list"></div>
           <details class="raw-details">
-            <summary>Raw JSON</summary>
+            <summary>Raw OCR JSON</summary>
             <pre id="rawJson"></pre>
           </details>
         </section>
